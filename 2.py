@@ -3,6 +3,7 @@ from tqdm import tqdm  # 从tqdm库导入tqdm类
 from requests_html import HTMLSession  # 从requests_html库导入HTMLSession类
 import keyboard  # 导入keyboard库
 import os  # 导入os库
+import ctypes  # 导入ctypes库
 
 # 定义下载目录
 download_dir = "D:\Downloads"  # 下载目录为D:\Downloads
@@ -18,7 +19,7 @@ os.chdir(download_dir)  # 设置当前工作目录为下载目录
 should_stop = False  # 初始化should_stop变量为False，用于控制是否停止下载
 
 # 定义Kemono网站的URL
-url = "https://kemono.su/fanbox/user/85202718/post/5117095"  
+url = "https://kemono.su/fanbox/user/85202718/post/4970887"  
 
 # 创建HTMLSession实例
 session = HTMLSession()  
@@ -69,13 +70,7 @@ if response.status_code == 200:
                 for chunk in video_response.iter_content(chunk_size=1024):  
                     if should_stop:  # 检查是否应该停止下载
                         break  # 如果应该停止下载，则跳出循环
-                    video_file.write(chunk)  # 将内容写入
+                    video_file.write(chunk)  # 将内容写入文件
 
-
-        else:
-            print(f"Failed to download video: {original_video_name}")  # 打印提示信息，下载视频失败
-else:
-    print("Failed to fetch website content")  # 打印提示信息，获取网站内容失败
-
-# 当程序结束时，移除Esc键的监听事件
-keyboard.unhook_all()  # 移除所有监听事件
+            # 下载完成后弹出提示框
+            ctypes.windll.user32.MessageBoxW(None, f"下载完成: {new_video_name}", "下载完成", 1)
