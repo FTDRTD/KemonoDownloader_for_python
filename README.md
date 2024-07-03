@@ -1,2 +1,1 @@
-用于网站的文件爬取下载
-使用python,requests库,tqdm库,requests_html库,keyboard库
+#VideoDownloader.py用于对于kemono.su网站的文件爬取下载使用python,requests库,tqdm库,requests_html库,keyboard库编写(此版本只能自行填写你要下载的网站链接比较繁琐)
