@@ -1,0 +1,6 @@
+requests==2.31.0
+keyboard==0.13.5
+tqdm==4.65.0
+requests-html==0.10.0
+win10toast==0.9
+concurrent.futures; python_version < '3.9'

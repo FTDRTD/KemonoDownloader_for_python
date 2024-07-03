@@ -1,0 +1,4 @@
+aiohttp==3.8.4
+beautifulsoup4==4.12.2
+tqdm==4.65.0
+PyQt5==5.15.9
