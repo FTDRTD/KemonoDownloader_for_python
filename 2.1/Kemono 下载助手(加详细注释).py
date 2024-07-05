@@ -29,6 +29,18 @@ interrupted = False
 
 
 # 清理文件名的函数
+"""
+    清理文件名，将其中的非法字符替换为下划线 '_'，并去除多余的空格和下划线。
+
+    Args:
+        filename (str): 需要清理的文件名。
+
+    Returns:
+        str: 清理后的文件名，只包含字母、数字、下划线 '_'、连字符 '-' 和点号 '.'。
+
+"""
+
+
 def sanitize_filename(filename):
     filename = re.sub(r"[^\w\-\.]", "_", filename)
     filename = re.sub(r"[_\s]+", "_", filename).strip("_")
@@ -36,6 +48,22 @@ def sanitize_filename(filename):
 
 
 # 异步获取页面 HTML 的函数
+"""
+    异步获取页面HTML内容
+
+    参数：
+        url (str)：目标URL
+        session (ClientSession)：aiohttp客户端会话对象
+        proxy (str, 可选)：代理服务器地址，默认为None
+        max_retries (int, 可选)：最大重试次数，默认为60
+        request_timeout (int, 可选)：请求超时时间，默认为60秒
+
+    返回值：
+        str：页面HTML内容；若请求失败或达到最大重试次数，返回None
+        
+"""
+
+
 async def get_page_html(url, session, proxy=None, max_retries=60, request_timeout=60):
     retries = 0
     while retries < max_retries:
@@ -65,8 +93,30 @@ async def get_page_html(url, session, proxy=None, max_retries=60, request_timeou
     print("达到最大重试次数，放弃请求。")
     return None
 
+    # 异步下载文件的函数
 
-# 异步下载文件的函数
+
+"""
+    异步下载文件。
+
+    Args:
+        url (str): 文件的URL地址。
+        file_name (str): 文件保存时的名称。
+        session (aiohttp.ClientSession): aiohttp的客户端会话对象。
+        proxy (Optional[str]): 代理服务器的URL地址，默认为None。
+        max_retries (int): 最大重试次数，默认为60次。
+        request_timeout (int): 请求超时时间（秒），默认为60秒。
+
+    Returns:
+        None: 函数无返回值，下载的文件将保存在指定的路径下。
+
+    Raises:
+        无特定异常，但如果在下载过程中遇到aiohttp.ClientError或asyncio.TimeoutError异常，
+        将打印错误信息，并尝试重新下载，直到达到最大重试次数后放弃。
+
+"""
+
+
 async def download_file(
     url,
     file_name,
@@ -121,6 +171,18 @@ async def download_file(
 
 
 # 异步提取链接的函数
+"""
+    从给定的HTML内容中提取满足特定模式的链接地址。
+
+    Args:
+        html (str): 待解析的HTML内容。
+
+    Returns:
+        list: 包含满足特定模式的链接地址的列表，每个链接地址前都添加了"https://kemono.su"。
+
+"""
+
+
 async def extract_links(html):
     soup = BeautifulSoup(html, "html.parser")
     pattern = r"/.*/user/\d+/post/.*"
@@ -133,6 +195,19 @@ async def extract_links(html):
 
 
 # 异步获取下一页 URL 的函数
+"""
+    从给定的HTML内容中提取下一页的URL。
+
+    Args:
+        html (str): 待解析的HTML内容。
+        base_url (str): 网页的基础URL，用于拼接相对路径。
+
+    Returns:
+        Union[str, None]: 如果找到下一页的链接，则返回完整的URL字符串；否则返回None。
+
+"""
+
+
 async def get_next_page_url(html, base_url):
     soup = BeautifulSoup(html, "html.parser")
     next_page_link = soup.find("a", class_="next")
@@ -143,6 +218,27 @@ async def get_next_page_url(html, base_url):
 
 
 # 主函数
+"""
+    从指定的url开始，下载相关页面中的.mp4和.zip文件，并保存到指定路径。
+
+    Args:
+        url (str): 起始页面的URL地址。
+        use_proxy (bool): 是否使用代理。
+        proxy_type (str): 代理类型，如"http"、"socks5"等。
+        proxy_address (str): 代理服务器的地址。
+        proxy_port (int): 代理服务器的端口。
+        max_retries (int): 请求失败时的最大重试次数。
+        request_delay (float): 每次请求之间的延迟时间（秒）。
+        request_timeout (float): 请求的超时时间（秒）。
+        max_concurrent_requests (int): 同时进行的最大请求数。
+        save_path (str): 保存下载文件的路径。
+
+    Returns:
+        None
+
+"""
+
+
 async def main(
     url,
     use_proxy,
@@ -243,6 +339,25 @@ class DownloadThread(QThread):
     finished = Signal()
     progress = Signal(str)
 
+    """
+    初始化函数，用于设置网络请求的参数和文件保存路径。
+
+    Args:
+        url (str): 目标URL地址。
+        use_proxy (bool): 是否使用代理。
+        proxy_type (str): 代理类型，如'http'、'https'、'socks4'、'socks5'等。
+        proxy_address (str): 代理服务器地址。
+        proxy_port (int): 代理服务器端口号。
+        max_retries (int): 最大重试次数。
+        request_delay (float): 每次请求之间的延迟时间（秒）。
+        request_timeout (int): 请求超时时间（秒）。
+        max_concurrent_requests (int): 最大并发请求数。
+        save_path (str): 保存下载文件的路径。
+
+    Returns:
+        None
+    """
+
     def __init__(
         self,
         url,
@@ -267,6 +382,17 @@ class DownloadThread(QThread):
         self.request_timeout = request_timeout
         self.max_concurrent_requests = max_concurrent_requests
         self.save_path = save_path
+
+        """
+        运行爬虫函数。
+
+        Args:
+        该函数没有直接接收参数，但会通过类的实例变量来传递参数。
+
+        Returns:
+        该函数没有返回值，但会通过类的实例变量 `finished` 发出一个信号，表示爬虫运行完成。
+
+        """
 
     def run(self):
         asyncio.run(
