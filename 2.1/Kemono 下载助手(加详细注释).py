@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import httpx
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -12,180 +13,130 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QCheckBox,
     QSpinBox,
-    QHBoxLayout,
+    QProgressBar,
     QMessageBox,
     QComboBox,
 )
-from PySide6.QtCore import QThread, Signal
-
+from PySide6.QtCore import QThread, Signal, Slot
+from collections import deque
 import os
 import re
-import aiohttp
-from aiohttp import ClientSession
+import aiofiles
 from bs4 import BeautifulSoup
 
-# 定义全局变量，用于标记是否收到中断信号和重试次数
-interrupted = False
+
+# 全局哈希表，存储已经下载的文件名，防止重复下载
+downloaded_files = set()
 
 
-# 清理文件名的函数
-"""
-    清理文件名，将其中的非法字符替换为下划线 '_'，并去除多余的空格和下划线。
-
-    Args:
-        filename (str): 需要清理的文件名。
-
-    Returns:
-        str: 清理后的文件名，只包含字母、数字、下划线 '_'、连字符 '-' 和点号 '.'。
-
-"""
-
-
+# 清理文件名的函数，替换非法字符
 def sanitize_filename(filename):
     filename = re.sub(r"[^\w\-\.]", "_", filename)
     filename = re.sub(r"[_\s]+", "_", filename).strip("_")
     return filename
 
 
-# 异步获取页面 HTML 的函数
-"""
-    异步获取页面HTML内容
-
-    参数：
-        url (str)：目标URL
-        session (ClientSession)：aiohttp客户端会话对象
-        proxy (str, 可选)：代理服务器地址，默认为None
-        max_retries (int, 可选)：最大重试次数，默认为60
-        request_timeout (int, 可选)：请求超时时间，默认为60秒
-
-    返回值：
-        str：页面HTML内容；若请求失败或达到最大重试次数，返回None
-        
-"""
-
-
-async def get_page_html(url, session, proxy=None, max_retries=60, request_timeout=60):
+# 异步获取页面 HTML 的函数，带有重试机制
+async def get_page_html(url, client, proxy=None, max_retries=3, request_timeout=30):
     retries = 0
     while retries < max_retries:
         try:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=request_timeout), proxy=proxy
-            ) as response:
-                if response.status == 200:
-                    return await response.text()
-                elif response.status == 403:
-                    print("请求失败，状态码：403 Forbidden")
-                    return None
-                elif response.status == 429:
-                    wait_time = min(5 * (2**retries), 60)  # 指数回退
-                    print(
-                        f"请求频率过高，暂时被服务器拒绝访问。重试中 ({retries + 1}/{max_retries})...等待 {wait_time} 秒"
-                    )
-                    retries += 1
-                    await asyncio.sleep(wait_time)
-                else:
-                    print(f"请求失败，状态码：{response.status}")
-                    return None
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            print(f"请求失败: {e}")
+            response = await client.get(url, timeout=request_timeout)
+            response.raise_for_status()
+            return response.text
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                return None
+            elif e.response.status_code == 429:
+                wait_time = min(5 * (2**retries), 60)  # 指数回退
+                retries += 1
+                await asyncio.sleep(wait_time)
+            else:
+                return None
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
             retries += 1
             await asyncio.sleep(5)
-    print("达到最大重试次数，放弃请求。")
     return None
 
-    # 异步下载文件的函数
 
-
-"""
-    异步下载文件。
-
-    Args:
-        url (str): 文件的URL地址。
-        file_name (str): 文件保存时的名称。
-        session (aiohttp.ClientSession): aiohttp的客户端会话对象。
-        proxy (Optional[str]): 代理服务器的URL地址，默认为None。
-        max_retries (int): 最大重试次数，默认为60次。
-        request_timeout (int): 请求超时时间（秒），默认为60秒。
-
-    Returns:
-        None: 函数无返回值，下载的文件将保存在指定的路径下。
-
-    Raises:
-        无特定异常，但如果在下载过程中遇到aiohttp.ClientError或asyncio.TimeoutError异常，
-        将打印错误信息，并尝试重新下载，直到达到最大重试次数后放弃。
-
-"""
-
-
+# 异步下载文件的函数
 async def download_file(
     url,
     file_name,
-    session,
+    client,
+    save_path,
+    progress_signal,
+    log_signal,
+    interrupted,
     proxy=None,
-    max_retries=60,
-    request_timeout=60,
+    max_retries=3,
+    request_timeout=30,
+    retry_queue=None,
 ):
+    # 检查哈希表中是否已有该文件，防止重复下载
+    if file_name in downloaded_files:
+        log_signal.emit(f"文件已下载: {file_name}")
+        return
+
     retries = 0
     while retries < max_retries:
         try:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=request_timeout), proxy=proxy
-            ) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get("content-length", 0))
-                block_size = 4096
+            response = await client.get(url, timeout=request_timeout)
+            response.raise_for_status()
+            total_size = int(response.headers.get("content-length", 0))
+            block_size = 4096
 
-                if not os.path.exists("downloads"):
-                    os.makedirs("downloads")
+            # 创建保存路径
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
 
-                file_path = os.path.join("downloads", file_name)
-                temp_path = file_path + ".part"
+            file_path = os.path.join(save_path, file_name)
+            temp_path = file_path + ".part"
 
-                with open(temp_path, "wb") as f:
-                    downloaded_size = 0
-                    async for data in response.content.iter_chunked(block_size):
-                        if interrupted:
-                            print("\n下载已中断")
-                            return
-                        f.write(data)
-                        downloaded_size += len(data)
-                        progress = (
-                            (downloaded_size / total_size) * 100 if total_size else 0
-                        )
-                        print(f"\r下载进度: {progress:.2f}%", end="")
+            async with aiofiles.open(temp_path, "wb") as f:
+                downloaded_size = 0
+                async for data in response.aiter_bytes(block_size):
+                    if interrupted[0]:
+                        log_signal.emit("下载已中断")
+                        return
+                    await f.write(data)
+                    downloaded_size += len(data)
+                    progress = (downloaded_size / total_size) * 100 if total_size else 0
+                    progress_signal.emit(progress)
 
-                os.rename(temp_path, file_path)  # 下载完成后重命名为最终文件名
-                return
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            print(f"下载失败: {e}")
+            # 检查最终文件是否已经存在
+            if os.path.exists(file_path):
+                log_signal.emit(f"文件已存在: {file_path}")
+                os.remove(temp_path)  # 如果存在则删除临时文件
+            else:
+                os.rename(temp_path, file_path)  # 将临时文件重命名为最终文件名
+                downloaded_files.add(file_name)  # 更新哈希表
+            return
+        except (httpx.RequestError, asyncio.TimeoutError) as e:
+            log_signal.emit(f"下载失败: {e}")
             retries += 1
             await asyncio.sleep(10)
 
             # 删除部分下载的文件和最终文件
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                if os.path.exists(file_path) and not os.path.exists(temp_path):
+                    os.remove(file_path)
+            except PermissionError:
+                log_signal.emit(
+                    f"无法删除文件: {temp_path} 或 {file_path}，可能正在被使用。"
+                )
 
-    print("达到最大重试次数，放弃下载。")
+    log_signal.emit("达到最大重试次数，放弃下载，将任务加入重试队列。")
+    if retry_queue is not None:
+        retry_queue.append((url, file_name))
 
 
 # 异步提取链接的函数
-"""
-    从给定的HTML内容中提取满足特定模式的链接地址。
-
-    Args:
-        html (str): 待解析的HTML内容。
-
-    Returns:
-        list: 包含满足特定模式的链接地址的列表，每个链接地址前都添加了"https://kemono.su"。
-
-"""
-
-
 async def extract_links(html):
     soup = BeautifulSoup(html, "html.parser")
-    pattern = r"/.*/user/\d+/post/.*"
+    pattern = r"/.*/user/\d+/post/.*"  # 匹配特定模式的链接
     links = []
     for link in soup.find_all("a"):
         href = link.get("href")
@@ -195,19 +146,6 @@ async def extract_links(html):
 
 
 # 异步获取下一页 URL 的函数
-"""
-    从给定的HTML内容中提取下一页的URL。
-
-    Args:
-        html (str): 待解析的HTML内容。
-        base_url (str): 网页的基础URL，用于拼接相对路径。
-
-    Returns:
-        Union[str, None]: 如果找到下一页的链接，则返回完整的URL字符串；否则返回None。
-
-"""
-
-
 async def get_next_page_url(html, base_url):
     soup = BeautifulSoup(html, "html.parser")
     next_page_link = soup.find("a", class_="next")
@@ -217,28 +155,36 @@ async def get_next_page_url(html, base_url):
     return None
 
 
+# 处理重试队列中的任务
+async def handle_retry_queue(
+    client,
+    retry_queue,
+    user_save_path,
+    progress_signal,
+    log_signal,
+    interrupted,
+    proxy,
+    max_retries,
+    request_timeout,
+):
+    while retry_queue:
+        url, file_name = retry_queue.popleft()
+        await download_file(
+            url,
+            file_name,
+            client,
+            user_save_path,
+            progress_signal,
+            log_signal,
+            interrupted,
+            proxy,
+            max_retries,
+            request_timeout,
+            retry_queue,
+        )
+
+
 # 主函数
-"""
-    从指定的url开始，下载相关页面中的.mp4和.zip文件，并保存到指定路径。
-
-    Args:
-        url (str): 起始页面的URL地址。
-        use_proxy (bool): 是否使用代理。
-        proxy_type (str): 代理类型，如"http"、"socks5"等。
-        proxy_address (str): 代理服务器的地址。
-        proxy_port (int): 代理服务器的端口。
-        max_retries (int): 请求失败时的最大重试次数。
-        request_delay (float): 每次请求之间的延迟时间（秒）。
-        request_timeout (float): 请求的超时时间（秒）。
-        max_concurrent_requests (int): 同时进行的最大请求数。
-        save_path (str): 保存下载文件的路径。
-
-    Returns:
-        None
-
-"""
-
-
 async def main(
     url,
     use_proxy,
@@ -250,33 +196,48 @@ async def main(
     request_timeout,
     max_concurrent_requests,
     save_path,
+    progress_signal,
+    log_signal,
+    interrupted,
 ):
-    global interrupted
     links = []
     base_url = "https://kemono.su"
+    retry_queue = deque()
 
     proxy = None
     if use_proxy:
         proxy = f"{proxy_type}://{proxy_address}:{proxy_port}"
 
-    async with ClientSession() as session:
+    limits = httpx.Limits(
+        max_keepalive_connections=max_concurrent_requests,
+        max_connections=max_concurrent_requests,
+    )
+    async with httpx.AsyncClient(limits=limits, proxies=proxy) as client:
         html = await get_page_html(
             url,
-            session,
+            client,
             proxy,
             max_retries,
             request_timeout,
         )
         if html:
             soup = BeautifulSoup(html, "html.parser")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            print(f"保存路径: {save_path}")
+            user_name_tag = soup.find("fix_name")
+            if user_name_tag:
+                user_name = sanitize_filename(user_name_tag.get_text())
+                user_save_path = os.path.join(save_path, user_name)
+                if not os.path.exists(user_save_path):
+                    os.makedirs(user_save_path)
+                log_signal.emit(f"保存路径: {user_save_path}")
+            else:
+                log_signal.emit("无法找到用户名，使用默认保存路径")
+                user_save_path = save_path
 
+            # 遍历所有页面，获取所有链接
             while url:
                 html = await get_page_html(
                     url,
-                    session,
+                    client,
                     proxy,
                     max_retries,
                     request_timeout,
@@ -291,25 +252,31 @@ async def main(
 
             semaphore = asyncio.Semaphore(max_concurrent_requests)
 
-            async def download_with_semaphore(url, file_name, session):
+            # 使用信号量限制并发下载
+            async def download_with_semaphore(url, file_name, client):
                 async with semaphore:
                     await download_file(
                         url,
                         file_name,
-                        session,
+                        client,
+                        user_save_path,  # 传递 user_save_path 参数
+                        progress_signal,
+                        log_signal,
+                        interrupted,
                         proxy,
                         max_retries,
                         request_timeout,
+                        retry_queue,
                     )
 
             tasks = []
             for link in links:
-                if interrupted:
-                    print("\n任务已中断")
+                if interrupted[0]:
+                    log_signal.emit("任务已中断")
                     break
                 html = await get_page_html(
                     link,
-                    session,
+                    client,
                     proxy,
                     max_retries,
                     request_timeout,
@@ -324,39 +291,36 @@ async def main(
                             file_name = sanitize_filename(attachment_link.text)
                             if file_name.endswith(".mp4") or file_name.endswith(".zip"):
                                 task = asyncio.create_task(
-                                    download_with_semaphore(href, file_name, session)
+                                    download_with_semaphore(href, file_name, client)
                                 )
                                 tasks.append(task)
                                 await asyncio.sleep(request_delay)  # 添加请求之间的延迟
 
             await asyncio.gather(*tasks)
 
-    print("下载完成！")
+            # 处理重试队列中的任务
+            if retry_queue:
+                log_signal.emit("开始处理重试队列中的任务")
+                await handle_retry_queue(
+                    client,
+                    retry_queue,
+                    user_save_path,
+                    progress_signal,
+                    log_signal,
+                    interrupted,
+                    proxy,
+                    max_retries,
+                    request_timeout,
+                )
+
+    log_signal.emit("所有下载任务完成！")
 
 
-# 下载线程类
+# 下载线程类，用于管理下载任务
 class DownloadThread(QThread):
     finished = Signal()
-    progress = Signal(str)
-
-    """
-    初始化函数，用于设置网络请求的参数和文件保存路径。
-
-    Args:
-        url (str): 目标URL地址。
-        use_proxy (bool): 是否使用代理。
-        proxy_type (str): 代理类型，如'http'、'https'、'socks4'、'socks5'等。
-        proxy_address (str): 代理服务器地址。
-        proxy_port (int): 代理服务器端口号。
-        max_retries (int): 最大重试次数。
-        request_delay (float): 每次请求之间的延迟时间（秒）。
-        request_timeout (int): 请求超时时间（秒）。
-        max_concurrent_requests (int): 最大并发请求数。
-        save_path (str): 保存下载文件的路径。
-
-    Returns:
-        None
-    """
+    progress = Signal(float)
+    log = Signal(str)
 
     def __init__(
         self,
@@ -382,19 +346,10 @@ class DownloadThread(QThread):
         self.request_timeout = request_timeout
         self.max_concurrent_requests = max_concurrent_requests
         self.save_path = save_path
-
-        """
-        运行爬虫函数。
-
-        Args:
-        该函数没有直接接收参数，但会通过类的实例变量来传递参数。
-
-        Returns:
-        该函数没有返回值，但会通过类的实例变量 `finished` 发出一个信号，表示爬虫运行完成。
-
-        """
+        self.interrupted = [False]
 
     def run(self):
+        self.log.emit(f"开始下载: {self.url}")  # 发射日志信号
         asyncio.run(
             main(
                 self.url,
@@ -407,12 +362,19 @@ class DownloadThread(QThread):
                 self.request_timeout,
                 self.max_concurrent_requests,
                 self.save_path,
+                self.progress,
+                self.log,
+                self.interrupted,
             )
         )
         self.finished.emit()
 
+    def stop(self):
+        self.interrupted[0] = True
+        self.log.emit("下载任务已中止")  # 发射日志信号
 
-# 主窗口类
+
+# 主窗口类，创建并设置GUI组件
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -447,25 +409,25 @@ class MainWindow(QMainWindow):
 
         self.max_retries_input = QSpinBox()
         self.max_retries_input.setRange(1, 100)
-        self.max_retries_input.setValue(60)
+        self.max_retries_input.setValue(20)
         layout.addWidget(QLabel("最大重试次数:"))
         layout.addWidget(self.max_retries_input)
 
         self.request_delay_input = QSpinBox()
         self.request_delay_input.setRange(1, 60)
-        self.request_delay_input.setValue(5)
+        self.request_delay_input.setValue(35)
         layout.addWidget(QLabel("请求之间的延迟 (秒):"))
         layout.addWidget(self.request_delay_input)
 
         self.request_timeout_input = QSpinBox()
         self.request_timeout_input.setRange(10, 300)
-        self.request_timeout_input.setValue(60)
+        self.request_timeout_input.setValue(30)
         layout.addWidget(QLabel("请求超时时间 (秒):"))
         layout.addWidget(self.request_timeout_input)
 
         self.max_concurrent_requests_input = QSpinBox()
         self.max_concurrent_requests_input.setRange(1, 50)
-        self.max_concurrent_requests_input.setValue(10)
+        self.max_concurrent_requests_input.setValue(5)
         layout.addWidget(QLabel("最大并发请求数:"))
         layout.addWidget(self.max_concurrent_requests_input)
 
@@ -482,6 +444,16 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("开始下载")
         self.start_button.clicked.connect(self.start_download)
         layout.addWidget(self.start_button)
+
+        self.stop_button = QPushButton("停止下载")
+        self.stop_button.clicked.connect(self.stop_download)
+        self.stop_button.setEnabled(False)  # 初始状态下禁用停止按钮
+        layout.addWidget(self.stop_button)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        layout.addWidget(QLabel("下载进度:"))
+        layout.addWidget(self.progress_bar)
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
@@ -513,6 +485,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请填写所有必填字段")
             return
 
+        # 创建下载线程
         self.download_thread = DownloadThread(
             url,
             use_proxy,
@@ -526,17 +499,34 @@ class MainWindow(QMainWindow):
             save_path,
         )
         self.download_thread.finished.connect(self.download_finished)
-        self.download_thread.progress.connect(self.update_log)
+        self.download_thread.progress.connect(self.update_progress)
+        self.download_thread.log.connect(self.update_log)
         self.download_thread.start()
+
+        # 禁用开始按钮，启用停止按钮
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+
+    def stop_download(self):
+        if self.download_thread:
+            self.download_thread.stop()
+            self.log_output.append("停止下载请求已发送")
 
     def download_finished(self):
         QMessageBox.information(self, "完成", "下载完成！")
 
-    def update_log(self, message):
-        self.log_output.append(message)
+        # 启用开始按钮，禁用停止按钮
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
 
-    def set_read_only(self, read_only):
-        self.line_edit.setEnabled(not read_only)
+    @Slot(float)
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    @Slot(str)
+    def update_log(self, message):
+        print(f"Log received: {message}")  # 调试信息
+        self.log_output.append(message)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,10 @@ import aiofiles
 from bs4 import BeautifulSoup
 
 
+# 全局哈希表，存储已经下载的文件名
+downloaded_files = set()
+
+
 # 清理文件名的函数
 def sanitize_filename(filename):
     filename = re.sub(r"[^\w\-\.]", "_", filename)
@@ -69,6 +73,11 @@ async def download_file(
     request_timeout=30,
     retry_queue=None,
 ):
+    # 检查哈希表中是否已有该文件
+    if file_name in downloaded_files:
+        log_signal.emit(f"文件已下载: {file_name}")
+        return
+
     retries = 0
     while retries < max_retries:
         try:
@@ -100,6 +109,7 @@ async def download_file(
                 os.remove(temp_path)  # 如果存在则删除临时文件
             else:
                 os.rename(temp_path, file_path)  # 将临时文件重命名为最终文件名
+                downloaded_files.add(file_name)  # 更新哈希表
             return
         except (httpx.RequestError, asyncio.TimeoutError) as e:
             log_signal.emit(f"下载失败: {e}")
@@ -336,7 +346,7 @@ class DownloadThread(QThread):
         self.interrupted = [False]
 
     def run(self):
-        self.log.emit(f"Starting download from {self.url}")  # 发射日志信号
+        self.log.emit(f"开始下载: {self.url}")  # 发射日志信号
         asyncio.run(
             main(
                 self.url,
@@ -396,13 +406,13 @@ class MainWindow(QMainWindow):
 
         self.max_retries_input = QSpinBox()
         self.max_retries_input.setRange(1, 100)
-        self.max_retries_input.setValue(10)
+        self.max_retries_input.setValue(20)
         layout.addWidget(QLabel("最大重试次数:"))
         layout.addWidget(self.max_retries_input)
 
         self.request_delay_input = QSpinBox()
         self.request_delay_input.setRange(1, 60)
-        self.request_delay_input.setValue(30)
+        self.request_delay_input.setValue(35)
         layout.addWidget(QLabel("请求之间的延迟 (秒):"))
         layout.addWidget(self.request_delay_input)
 
@@ -414,7 +424,7 @@ class MainWindow(QMainWindow):
 
         self.max_concurrent_requests_input = QSpinBox()
         self.max_concurrent_requests_input.setRange(1, 50)
-        self.max_concurrent_requests_input.setValue(3)
+        self.max_concurrent_requests_input.setValue(5)
         layout.addWidget(QLabel("最大并发请求数:"))
         layout.addWidget(self.max_concurrent_requests_input)
 
