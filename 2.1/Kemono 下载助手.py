@@ -71,6 +71,7 @@ async def download_file(
     url,
     file_name,
     session,
+    save_path,  # 添加 save_path 参数
     proxy=None,
     max_retries=60,
     request_timeout=60,
@@ -85,10 +86,10 @@ async def download_file(
                 total_size = int(response.headers.get("content-length", 0))
                 block_size = 4096
 
-                if not os.path.exists("downloads"):
-                    os.makedirs("downloads")
+                if not os.path.exists(save_path):
+                    os.makedirs(save_path)
 
-                file_path = os.path.join("downloads", file_name)
+                file_path = os.path.join(save_path, file_name)
                 temp_path = file_path + ".part"
 
                 with open(temp_path, "wb") as f:
@@ -201,6 +202,7 @@ async def main(
                         url,
                         file_name,
                         session,
+                        save_path,  # 传递 save_path 参数
                         proxy,
                         max_retries,
                         request_timeout,
@@ -385,7 +387,7 @@ class MainWindow(QMainWindow):
 
         if not url or not save_path:
             QMessageBox.warning(self, "警告", "请填写所有必填字段")
-            return
+        return
 
         self.download_thread = DownloadThread(
             url,
