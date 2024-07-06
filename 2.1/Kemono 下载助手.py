@@ -23,6 +23,7 @@ import os
 import re
 import aiofiles
 from bs4 import BeautifulSoup
+import datetime  # 引入datetime模块
 
 
 # 全局哈希表，存储已经下载的文件名
@@ -199,6 +200,12 @@ async def main(
     log_signal,
     interrupted,
 ):
+    # 生成唯一的文件夹名称，例如使用时间戳
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_folder_name = f"download_{timestamp}"
+    unique_save_path = os.path.join(save_path, unique_folder_name)
+    os.makedirs(unique_save_path, exist_ok=True)  # 创建子文件夹
+
     links = []
     base_url = "https://kemono.su"
     retry_queue = deque()
@@ -220,18 +227,6 @@ async def main(
             request_timeout,
         )
         if html:
-            soup = BeautifulSoup(html, "html.parser")
-            user_name_tag = soup.find("fix_name")
-            if user_name_tag:
-                user_name = sanitize_filename(user_name_tag.get_text())
-                user_save_path = os.path.join(save_path, user_name)
-                if not os.path.exists(user_save_path):
-                    os.makedirs(user_save_path)
-                log_signal.emit(f"保存路径: {user_save_path}")
-            else:
-                log_signal.emit("无法找到用户名，使用默认保存路径")
-                user_save_path = save_path
-
             while url:
                 html = await get_page_html(
                     url,
@@ -256,7 +251,7 @@ async def main(
                         url,
                         file_name,
                         client,
-                        user_save_path,  # 传递 user_save_path 参数
+                        unique_save_path,  # 传递 unique_save_path 参数
                         progress_signal,
                         log_signal,
                         interrupted,
@@ -301,7 +296,7 @@ async def main(
                 await handle_retry_queue(
                     client,
                     retry_queue,
-                    user_save_path,
+                    unique_save_path,
                     progress_signal,
                     log_signal,
                     interrupted,
