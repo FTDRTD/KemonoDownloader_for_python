@@ -4,7 +4,7 @@
 
 用于kemono.su网站的文件爬取下载使用
 
-## 1.0版本
+## 1.0版本(命令行版本)
 
 使用了python,requests库,tqdm库,requests_html库,keyboard库编写(此版本只能自行填写你要下载的网站链接比较繁琐)
 
@@ -12,7 +12,7 @@
 
 ![img](img/image2.png) -->
 
-## 2.1版本
+## 2.1版本(GUI版本)
 
 使用了PySide6,httpx,aiofiles,beautifulsoup4编写(此版本可以自动填写你要下载的网站主页链接,并可视化显示进度条)当下载完成会弹出提示框
 
