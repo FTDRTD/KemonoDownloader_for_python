@@ -12,11 +12,11 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QCheckBox,
     QSpinBox,
-    QHBoxLayout,
+    QProgressBar,
     QMessageBox,
     QComboBox,
 )
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Slot
 
 import os
 import re
@@ -72,6 +72,8 @@ async def download_file(
     file_name,
     session,
     save_path,  # 添加 save_path 参数
+    progress_signal,
+    log_signal,
     proxy=None,
     max_retries=60,
     request_timeout=60,
@@ -96,19 +98,20 @@ async def download_file(
                     downloaded_size = 0
                     async for data in response.content.iter_chunked(block_size):
                         if interrupted:
-                            print("\n下载已中断")
+                            log_signal.emit("下载已中断")
                             return
                         f.write(data)
                         downloaded_size += len(data)
                         progress = (
                             (downloaded_size / total_size) * 100 if total_size else 0
                         )
-                        print(f"\r下载进度: {progress:.2f}%", end="")
+                        progress_signal.emit(progress)
+                        log_signal.emit(f"下载进度: {progress:.2f}%")
 
                 os.rename(temp_path, file_path)  # 下载完成后重命名为最终文件名
                 return
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            print(f"下载失败: {e}")
+            log_signal.emit(f"下载失败: {e}")
             retries += 1
             await asyncio.sleep(10)
 
@@ -118,7 +121,7 @@ async def download_file(
             if os.path.exists(file_path):
                 os.remove(file_path)
 
-    print("达到最大重试次数，放弃下载。")
+    log_signal.emit("达到最大重试次数，放弃下载。")
 
 
 # 异步提取链接的函数
@@ -155,6 +158,8 @@ async def main(
     request_timeout,
     max_concurrent_requests,
     save_path,
+    progress_signal,
+    log_signal,
 ):
     global interrupted
     links = []
@@ -174,9 +179,16 @@ async def main(
         )
         if html:
             soup = BeautifulSoup(html, "html.parser")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            print(f"保存路径: {save_path}")
+            user_name_tag = soup.find("fix_name")
+            if user_name_tag:
+                user_name = sanitize_filename(user_name_tag.get_text())
+                user_save_path = os.path.join(save_path, user_name)
+                if not os.path.exists(user_save_path):
+                    os.makedirs(user_save_path)
+                log_signal.emit(f"保存路径: {user_save_path}")
+            else:
+                log_signal.emit("无法找到用户名，使用默认保存路径")
+                user_save_path = save_path
 
             while url:
                 html = await get_page_html(
@@ -202,7 +214,9 @@ async def main(
                         url,
                         file_name,
                         session,
-                        save_path,  # 传递 save_path 参数
+                        user_save_path,  # 传递 user_save_path 参数
+                        progress_signal,
+                        log_signal,
                         proxy,
                         max_retries,
                         request_timeout,
@@ -211,7 +225,7 @@ async def main(
             tasks = []
             for link in links:
                 if interrupted:
-                    print("\n任务已中断")
+                    log_signal.emit("任务已中断")
                     break
                 html = await get_page_html(
                     link,
@@ -237,13 +251,14 @@ async def main(
 
             await asyncio.gather(*tasks)
 
-    print("下载完成！")
+    log_signal.emit("下载完成！")
 
 
 # 下载线程类
 class DownloadThread(QThread):
     finished = Signal()
-    progress = Signal(str)
+    progress = Signal(float)
+    log = Signal(str)
 
     def __init__(
         self,
@@ -283,6 +298,8 @@ class DownloadThread(QThread):
                 self.request_timeout,
                 self.max_concurrent_requests,
                 self.save_path,
+                self.progress,
+                self.log,
             )
         )
         self.finished.emit()
@@ -359,6 +376,11 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_download)
         layout.addWidget(self.start_button)
 
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        layout.addWidget(QLabel("下载进度:"))
+        layout.addWidget(self.progress_bar)
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         layout.addWidget(QLabel("日志输出:"))
@@ -387,7 +409,7 @@ class MainWindow(QMainWindow):
 
         if not url or not save_path:
             QMessageBox.warning(self, "警告", "请填写所有必填字段")
-        return
+            return
 
         self.download_thread = DownloadThread(
             url,
@@ -402,12 +424,18 @@ class MainWindow(QMainWindow):
             save_path,
         )
         self.download_thread.finished.connect(self.download_finished)
-        self.download_thread.progress.connect(self.update_log)
+        self.download_thread.progress.connect(self.update_progress)
+        self.download_thread.log.connect(self.update_log)
         self.download_thread.start()
 
     def download_finished(self):
         QMessageBox.information(self, "完成", "下载完成！")
 
+    @Slot(float)
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    @Slot(str)
     def update_log(self, message):
         self.log_output.append(message)
 
