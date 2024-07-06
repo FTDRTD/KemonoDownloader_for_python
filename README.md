@@ -10,4 +10,6 @@
 
 ## 2.1版本
 
-使用了aiohttp,beautifulsoup4,tqdm,PyQt5编写(此版本可以自动填写你要下载的网站主页链接,并可视化显示进度条)
+使用了PySide6,httpx,aiofiles,beautifulsoup4编写(此版本可以自动填写你要下载的网站主页链接,并可视化显示进度条)
+
+没有实现自动以创作者名字自动命名文件夹,需要手动整理文件夹
