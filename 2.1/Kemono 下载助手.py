@@ -21,7 +21,7 @@ from PySide6.QtCore import QThread, Signal, Slot
 import os
 import re
 import aiohttp
-from aiohttp import ClientSession
+from aiohttp import ClientSession, TCPConnector
 from bs4 import BeautifulSoup
 
 # 定义全局变量，用于标记是否收到中断信号和重试次数
@@ -36,7 +36,7 @@ def sanitize_filename(filename):
 
 
 # 异步获取页面 HTML 的函数
-async def get_page_html(url, session, proxy=None, max_retries=60, request_timeout=60):
+async def get_page_html(url, session, proxy=None, max_retries=3, request_timeout=30):
     retries = 0
     while retries < max_retries:
         try:
@@ -71,12 +71,12 @@ async def download_file(
     url,
     file_name,
     session,
-    save_path,  # 添加 save_path 参数
+    save_path,
     progress_signal,
     log_signal,
     proxy=None,
-    max_retries=60,
-    request_timeout=60,
+    max_retries=3,
+    request_timeout=30,
 ):
     retries = 0
     while retries < max_retries:
@@ -106,9 +106,13 @@ async def download_file(
                             (downloaded_size / total_size) * 100 if total_size else 0
                         )
                         progress_signal.emit(progress)
-                        log_signal.emit(f"下载进度: {progress:.2f}%")
 
-                os.rename(temp_path, file_path)  # 下载完成后重命名为最终文件名
+                # 检查最终文件是否已经存在
+                if os.path.exists(file_path):
+                    log_signal.emit(f"文件已存在: {file_path}")
+                    os.remove(temp_path)  # 如果存在则删除临时文件
+                else:
+                    os.rename(temp_path, file_path)  # 将临时文件重命名为最终文件名
                 return
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             log_signal.emit(f"下载失败: {e}")
@@ -118,7 +122,7 @@ async def download_file(
             # 删除部分下载的文件和最终文件
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            if os.path.exists(file_path):
+            if os.path.exists(file_path) and not os.path.exists(temp_path):
                 os.remove(file_path)
 
     log_signal.emit("达到最大重试次数，放弃下载。")
@@ -169,7 +173,8 @@ async def main(
     if use_proxy:
         proxy = f"{proxy_type}://{proxy_address}:{proxy_port}"
 
-    async with ClientSession() as session:
+    connector = TCPConnector(limit_per_host=max_concurrent_requests)
+    async with ClientSession(connector=connector) as session:
         html = await get_page_html(
             url,
             session,
@@ -340,7 +345,7 @@ class MainWindow(QMainWindow):
 
         self.max_retries_input = QSpinBox()
         self.max_retries_input.setRange(1, 100)
-        self.max_retries_input.setValue(60)
+        self.max_retries_input.setValue(3)
         layout.addWidget(QLabel("最大重试次数:"))
         layout.addWidget(self.max_retries_input)
 
@@ -352,7 +357,7 @@ class MainWindow(QMainWindow):
 
         self.request_timeout_input = QSpinBox()
         self.request_timeout_input.setRange(10, 300)
-        self.request_timeout_input.setValue(60)
+        self.request_timeout_input.setValue(30)
         layout.addWidget(QLabel("请求超时时间 (秒):"))
         layout.addWidget(self.request_timeout_input)
 
@@ -438,9 +443,6 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def update_log(self, message):
         self.log_output.append(message)
-
-    def set_read_only(self, read_only):
-        self.line_edit.setEnabled(not read_only)
 
 
 if __name__ == "__main__":
